@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "Classroom Batch Manager",
+  "version": "1.0",
+  "description": "Create groups of Google Classrooms and perform batch operations like uploading files and creating assignments across multiple classes.",
+  
+  "permissions": [
+    "storage",
+    "activeTab",
+    "identity"
+  ],
+  
+  "host_permissions": [
+    "https://classroom.google.com/*"
+  ],
+  
+  "content_scripts": [
+    {
+      "matches": ["https://classroom.google.com/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"]
+    }
+  ],
+  
+  "background": {
+    "service_worker": "background.js"
+  },
+  
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Classroom Batch Manager"
+  },
+  
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  
+  "oauth2": {
+    "client_id": "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/classroom.courses",
+      "https://www.googleapis.com/auth/classroom.coursework.students",
+      "https://www.googleapis.com/auth/classroom.announcements",
+      "https://www.googleapis.com/auth/drive.file"
+    ]
+  }
+}
