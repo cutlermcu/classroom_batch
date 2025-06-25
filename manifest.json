@@ -7,18 +7,21 @@
   "permissions": [
     "storage",
     "activeTab",
+    "contextMenus",
     "identity"
   ],
   
   "host_permissions": [
-    "https://classroom.google.com/*"
+    "https://classroom.google.com/*",
+    "https://www.googleapis.com/*"
   ],
   
   "content_scripts": [
     {
       "matches": ["https://classroom.google.com/*"],
       "js": ["content.js"],
-      "css": ["styles.css"]
+      "css": ["styles.css"],
+      "run_at": "document_idle"
     }
   ],
   
@@ -28,7 +31,11 @@
   
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Classroom Batch Manager"
+    "default_title": "Classroom Batch Manager",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png"
+    }
   },
   
   "icons": {
@@ -38,12 +45,25 @@
   },
   
   "oauth2": {
-    "client_id": "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com",
+    "client_id": "REPLACE_WITH_YOUR_CLIENT_ID.apps.googleusercontent.com",
     "scopes": [
-      "https://www.googleapis.com/auth/classroom.courses",
+      "https://www.googleapis.com/auth/classroom.courses.readonly",
       "https://www.googleapis.com/auth/classroom.coursework.students",
       "https://www.googleapis.com/auth/classroom.announcements",
       "https://www.googleapis.com/auth/drive.file"
     ]
-  }
+  },
+  
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*.png"],
+      "matches": ["https://classroom.google.com/*"]
+    }
+  ],
+  
+  "key": "WILL_BE_GENERATED_AUTOMATICALLY"
 }
