@@ -159,17 +159,17 @@ class ClassroomBatchManager {
 
     let courses = [];
 
-    // Try API-cached courses first
-    const stored = await chrome.storage.sync.get(['cachedCourses']);
+    // Try locally-cached courses first (stored in local, not sync, to avoid quota)
+    const stored = await chrome.storage.local.get(['cachedCourses']);
     if (stored.cachedCourses && stored.cachedCourses.length > 0) {
-      courses = stored.cachedCourses.map(c => ({ id: c.id, name: c.name }));
+      courses = stored.cachedCourses;
     } else {
       // Fetch from API
       try {
         const response = await chrome.runtime.sendMessage({ action: 'getCourses' });
         if (response.success && response.courses.length > 0) {
           courses = response.courses.map(c => ({ id: c.id, name: c.name }));
-          await chrome.storage.sync.set({ cachedCourses: response.courses });
+          await chrome.storage.local.set({ cachedCourses: courses });
         }
       } catch (e) {
         console.warn('API fetch failed, falling back to DOM parsing');
