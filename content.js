@@ -6,9 +6,11 @@ class ClassroomBatchManager {
   }
 
   init() {
-    this.loadStoredGroups();
-    this.addBatchManagerUI();
+    this.loadStoredGroups().then(() => {
+      this.addBatchManagerUI();
+    });
     this.observePageChanges();
+    this.listenForPopupMessages();
   }
 
   async loadStoredGroups() {
@@ -20,20 +22,28 @@ class ClassroomBatchManager {
     await chrome.storage.sync.set({ classroomGroups: this.groups });
   }
 
+  listenForPopupMessages() {
+    chrome.runtime.onMessage.addListener((request) => {
+      if (request.action === 'showGroupManagement') this.showGroupManagementModal();
+      if (request.action === 'showBatchUpload') this.showBatchUploadModal();
+      if (request.action === 'showBatchAssignment') this.showBatchAssignmentModal();
+      if (request.action === 'showAddToGroupModal') this.showAddToGroupModal();
+    });
+  }
+
   addBatchManagerUI() {
-    // Only add UI on main classroom page
-    if (!window.location.pathname.includes('/u/') && 
-        window.location.pathname === '/') {
+    if (window.location.pathname === '/' || window.location.pathname.match(/^\/u\/\d+\/?$/)) {
       this.addMainPageUI();
     }
-    
-    // Add UI to individual classroom pages
+
     if (window.location.pathname.includes('/c/')) {
       this.addClassroomPageUI();
     }
   }
 
   addMainPageUI() {
+    if (document.getElementById('batch-manager-container')) return;
+
     const classroomList = document.querySelector('[data-module-id="eJz7eQ"]');
     if (!classroomList) return;
 
@@ -57,16 +67,17 @@ class ClassroomBatchManager {
   }
 
   addClassroomPageUI() {
-    const toolbar = document.querySelector('[data-test-id="classroom-header"]') || 
-                   document.querySelector('.z0LcW');
+    if (document.getElementById('add-to-group-btn')) return;
+
+    const toolbar = document.querySelector('[data-test-id="classroom-header"]') ||
+                    document.querySelector('.z0LcW');
     if (!toolbar) return;
 
     const batchButton = document.createElement('button');
     batchButton.id = 'add-to-group-btn';
     batchButton.className = 'batch-classroom-btn';
-    batchButton.innerHTML = '📁 Add to Group';
+    batchButton.textContent = 'Add to Group';
     batchButton.addEventListener('click', () => this.showAddToGroupModal());
-
     toolbar.appendChild(batchButton);
   }
 
@@ -74,11 +85,9 @@ class ClassroomBatchManager {
     document.getElementById('manage-groups-btn')?.addEventListener('click', () => {
       this.showGroupManagementModal();
     });
-
     document.getElementById('batch-upload-btn')?.addEventListener('click', () => {
       this.showBatchUploadModal();
     });
-
     document.getElementById('batch-assign-btn')?.addEventListener('click', () => {
       this.showBatchAssignmentModal();
     });
@@ -89,7 +98,12 @@ class ClassroomBatchManager {
     if (!groupsDisplay) return;
 
     groupsDisplay.innerHTML = '';
-    
+
+    if (Object.keys(this.groups).length === 0) {
+      groupsDisplay.innerHTML = '<p class="no-groups-msg">No groups yet. Click "Manage Groups" to create one.</p>';
+      return;
+    }
+
     Object.entries(this.groups).forEach(([groupName, classrooms]) => {
       const groupDiv = document.createElement('div');
       groupDiv.className = 'group-item';
@@ -97,8 +111,8 @@ class ClassroomBatchManager {
         <div class="group-header">
           <span class="group-name">${groupName}</span>
           <span class="classroom-count">${classrooms.length} classes</span>
-          <button class="edit-group-btn" data-group="${groupName}">✏️</button>
-          <button class="delete-group-btn" data-group="${groupName}">🗑️</button>
+          <button class="edit-group-btn" data-group="${groupName}" title="Edit group">&#9998;</button>
+          <button class="delete-group-btn" data-group="${groupName}" title="Delete group">&#128465;</button>
         </div>
         <div class="group-classrooms">
           ${classrooms.map(c => `<span class="classroom-tag">${c.name}</span>`).join('')}
@@ -107,66 +121,87 @@ class ClassroomBatchManager {
       groupsDisplay.appendChild(groupDiv);
     });
 
-    // Attach group action events
     document.querySelectorAll('.edit-group-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        this.editGroup(e.target.dataset.group);
-      });
+      btn.addEventListener('click', (e) => this.editGroup(e.target.dataset.group));
     });
 
     document.querySelectorAll('.delete-group-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        this.deleteGroup(e.target.dataset.group);
-      });
+      btn.addEventListener('click', (e) => this.deleteGroup(e.target.dataset.group));
     });
   }
 
+  // ── Group Management ────────────────────────────────────────────────────────
+
   showGroupManagementModal() {
-    const modal = this.createModal('Manage Classroom Groups', `
+    this.createModal('Manage Classroom Groups', `
       <div class="group-management">
         <div class="create-group-section">
           <h4>Create New Group</h4>
-          <input type="text" id="new-group-name" placeholder="Group name (e.g., '6th Grade Math')">
+          <input type="text" id="new-group-name" placeholder="Group name (e.g., '6th Grade Advisory')">
+          <div id="create-classroom-list" class="classroom-list">Loading classrooms...</div>
           <button id="create-group-btn" class="batch-btn primary">Create Group</button>
-        </div>
-        <div class="available-classrooms">
-          <h4>Available Classrooms</h4>
-          <div id="classroom-list" class="classroom-list">
-            Loading classrooms...
-          </div>
         </div>
       </div>
     `);
 
-    this.loadAvailableClassrooms();
-    
+    this.loadAvailableClassrooms('create-classroom-list');
+
     document.getElementById('create-group-btn')?.addEventListener('click', () => {
       this.createNewGroup();
     });
   }
 
-  async loadAvailableClassrooms() {
-    const classroomList = document.getElementById('classroom-list');
-    if (!classroomList) return;
+  async loadAvailableClassrooms(containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return [];
 
-    // Parse classrooms from the current page
-    const classroomElements = document.querySelectorAll('[data-test-id="class-card-title"]');
-    const classrooms = Array.from(classroomElements).map(el => ({
-      name: el.textContent.trim(),
-      id: this.extractClassroomId(el.closest('[href]')?.href || ''),
-      element: el
-    }));
+    container.innerHTML = 'Loading classrooms...';
 
-    classroomList.innerHTML = '';
-    classrooms.forEach(classroom => {
-      const classroomDiv = document.createElement('div');
-      classroomDiv.className = 'classroom-item';
-      classroomDiv.innerHTML = `
-        <input type="checkbox" id="classroom-${classroom.id}" value="${classroom.id}" data-name="${classroom.name}">
-        <label for="classroom-${classroom.id}">${classroom.name}</label>
+    let courses = [];
+
+    // Try API-cached courses first
+    const stored = await chrome.storage.sync.get(['cachedCourses']);
+    if (stored.cachedCourses && stored.cachedCourses.length > 0) {
+      courses = stored.cachedCourses.map(c => ({ id: c.id, name: c.name }));
+    } else {
+      // Fetch from API
+      try {
+        const response = await chrome.runtime.sendMessage({ action: 'getCourses' });
+        if (response.success && response.courses.length > 0) {
+          courses = response.courses.map(c => ({ id: c.id, name: c.name }));
+          await chrome.storage.sync.set({ cachedCourses: response.courses });
+        }
+      } catch (e) {
+        console.warn('API fetch failed, falling back to DOM parsing');
+      }
+
+      // DOM fallback
+      if (courses.length === 0) {
+        const elements = document.querySelectorAll('[data-test-id="class-card-title"]');
+        courses = Array.from(elements).map(el => ({
+          name: el.textContent.trim(),
+          id: this.extractClassroomId(el.closest('[href]')?.href || '')
+        })).filter(c => c.id);
+      }
+    }
+
+    if (courses.length === 0) {
+      container.innerHTML = '<p class="no-groups-msg">No classrooms found. Try syncing from the popup first.</p>';
+      return [];
+    }
+
+    container.innerHTML = '';
+    courses.forEach(classroom => {
+      const div = document.createElement('div');
+      div.className = 'classroom-item';
+      div.innerHTML = `
+        <input type="checkbox" id="cls-${containerId}-${classroom.id}" value="${classroom.id}" data-name="${classroom.name}">
+        <label for="cls-${containerId}-${classroom.id}">${classroom.name}</label>
       `;
-      classroomList.appendChild(classroomDiv);
+      container.appendChild(div);
     });
+
+    return courses;
   }
 
   createNewGroup() {
@@ -176,35 +211,129 @@ class ClassroomBatchManager {
       return;
     }
 
-    const selectedClassrooms = [];
-    document.querySelectorAll('#classroom-list input[type="checkbox"]:checked').forEach(checkbox => {
-      selectedClassrooms.push({
-        id: checkbox.value,
-        name: checkbox.dataset.name
-      });
+    const selected = [];
+    document.querySelectorAll('#create-classroom-list input[type="checkbox"]:checked').forEach(cb => {
+      selected.push({ id: cb.value, name: cb.dataset.name });
     });
 
-    if (selectedClassrooms.length === 0) {
+    if (selected.length === 0) {
       alert('Please select at least one classroom');
       return;
     }
 
-    this.groups[groupName] = selectedClassrooms;
+    this.groups[groupName] = selected;
     this.saveGroups();
     this.displayGroups();
     this.closeModal();
-    
-    alert(`Group "${groupName}" created with ${selectedClassrooms.length} classrooms!`);
   }
 
+  editGroup(groupName) {
+    const currentClassrooms = this.groups[groupName] || [];
+    const currentIds = new Set(currentClassrooms.map(c => c.id));
+
+    this.createModal(`Edit Group: ${groupName}`, `
+      <div class="group-management">
+        <div class="create-group-section">
+          <h4>Rename Group</h4>
+          <input type="text" id="edit-group-name" value="${groupName}" placeholder="Group name">
+          <h4>Classrooms in Group</h4>
+          <div id="edit-classroom-list" class="classroom-list">Loading classrooms...</div>
+          <button id="save-edit-group-btn" class="batch-btn primary">Save Changes</button>
+        </div>
+      </div>
+    `);
+
+    this.loadAvailableClassrooms('edit-classroom-list').then(() => {
+      // Pre-check classrooms already in this group
+      document.querySelectorAll('#edit-classroom-list input[type="checkbox"]').forEach(cb => {
+        if (currentIds.has(cb.value)) cb.checked = true;
+      });
+    });
+
+    document.getElementById('save-edit-group-btn')?.addEventListener('click', () => {
+      const newName = document.getElementById('edit-group-name')?.value.trim();
+      if (!newName) { alert('Please enter a group name'); return; }
+
+      const selected = [];
+      document.querySelectorAll('#edit-classroom-list input[type="checkbox"]:checked').forEach(cb => {
+        selected.push({ id: cb.value, name: cb.dataset.name });
+      });
+
+      if (selected.length === 0) { alert('Please select at least one classroom'); return; }
+
+      delete this.groups[groupName];
+      this.groups[newName] = selected;
+      this.saveGroups();
+      this.displayGroups();
+      this.closeModal();
+    });
+  }
+
+  deleteGroup(groupName) {
+    if (confirm(`Delete group "${groupName}"?`)) {
+      delete this.groups[groupName];
+      this.saveGroups();
+      this.displayGroups();
+    }
+  }
+
+  showAddToGroupModal() {
+    const courseId = this.extractClassroomId(window.location.href);
+    const courseName = document.title.replace(' - Google Classroom', '').trim();
+
+    if (!courseId) {
+      alert('Could not determine classroom ID from this page.');
+      return;
+    }
+
+    const groupNames = Object.keys(this.groups);
+    if (groupNames.length === 0) {
+      alert('No groups exist yet. Create a group first from the main Classroom page.');
+      return;
+    }
+
+    this.createModal('Add to Group', `
+      <div class="group-management">
+        <p>Adding <strong>${courseName}</strong> to a group:</p>
+        <div id="add-to-group-list">
+          ${groupNames.map(name => `
+            <div class="classroom-item">
+              <input type="checkbox" id="atg-${name}" value="${name}"
+                ${(this.groups[name] || []).some(c => c.id === courseId) ? 'checked' : ''}>
+              <label for="atg-${name}">${name} (${this.groups[name].length} classes)</label>
+            </div>
+          `).join('')}
+        </div>
+        <button id="save-add-to-group-btn" class="batch-btn primary">Save</button>
+      </div>
+    `);
+
+    document.getElementById('save-add-to-group-btn')?.addEventListener('click', () => {
+      groupNames.forEach(name => {
+        const cb = document.getElementById(`atg-${name}`);
+        const alreadyIn = (this.groups[name] || []).some(c => c.id === courseId);
+        if (cb.checked && !alreadyIn) {
+          this.groups[name].push({ id: courseId, name: courseName });
+        } else if (!cb.checked && alreadyIn) {
+          this.groups[name] = this.groups[name].filter(c => c.id !== courseId);
+        }
+      });
+      this.saveGroups();
+      this.closeModal();
+      alert('Group membership updated.');
+    });
+  }
+
+  // ── Batch Upload ─────────────────────────────────────────────────────────────
+
   showBatchUploadModal() {
-    const modal = this.createModal('Batch Upload Files', `
+    this.createModal('Batch Upload Files', `
       <div class="batch-upload">
         <div class="group-selection">
           <h4>Select Group</h4>
           <select id="upload-group-select" class="group-select">
             <option value="">Choose a group...</option>
-            ${Object.keys(this.groups).map(group => 
+            ${Object.keys(this.groups).map(group =>
               `<option value="${group}">${group} (${this.groups[group].length} classes)</option>`
             ).join('')}
           </select>
@@ -215,32 +344,32 @@ class ClassroomBatchManager {
           <div class="file-list" id="selected-files"></div>
         </div>
         <div class="upload-options">
-          <h4>Upload Options</h4>
-          <label>
-            <input type="radio" name="upload-type" value="material" checked> Add as Material
-          </label>
-          <label>
-            <input type="radio" name="upload-type" value="assignment"> Create Assignment
-          </label>
-          <div id="assignment-options" style="display: none;">
-            <input type="text" id="assignment-title" placeholder="Assignment title">
+          <h4>Upload Type</h4>
+          <label><input type="radio" name="upload-type" value="material" checked> Add as Material</label>
+          <label><input type="radio" name="upload-type" value="assignment"> Create Assignment</label>
+          <div id="assignment-options" style="display:none;">
+            <input type="text" id="assignment-title" placeholder="Assignment title (required)">
             <textarea id="assignment-description" placeholder="Assignment description"></textarea>
             <input type="date" id="assignment-due-date">
+          </div>
+          <div id="material-options">
+            <input type="text" id="material-title" placeholder="Material title (required)">
+            <textarea id="material-description" placeholder="Description (optional)"></textarea>
           </div>
         </div>
         <button id="execute-batch-upload" class="batch-btn primary">Upload to All Classes</button>
       </div>
     `);
 
-    // Handle upload type change
     document.querySelectorAll('input[name="upload-type"]').forEach(radio => {
       radio.addEventListener('change', (e) => {
-        const assignmentOptions = document.getElementById('assignment-options');
-        assignmentOptions.style.display = e.target.value === 'assignment' ? 'block' : 'none';
+        document.getElementById('assignment-options').style.display =
+          e.target.value === 'assignment' ? 'block' : 'none';
+        document.getElementById('material-options').style.display =
+          e.target.value === 'material' ? 'block' : 'none';
       });
     });
 
-    // Handle file selection
     document.getElementById('batch-files')?.addEventListener('change', (e) => {
       this.displaySelectedFiles(e.target.files);
     });
@@ -250,32 +379,72 @@ class ClassroomBatchManager {
     });
   }
 
+  async executeBatchUpload() {
+    const groupName = document.getElementById('upload-group-select')?.value;
+    const files = document.getElementById('batch-files')?.files;
+    const uploadType = document.querySelector('input[name="upload-type"]:checked')?.value;
+
+    if (!groupName) { alert('Please select a group'); return; }
+    if (!files || files.length === 0) { alert('Please select at least one file'); return; }
+
+    const classrooms = this.groups[groupName];
+
+    if (uploadType === 'assignment') {
+      const title = document.getElementById('assignment-title')?.value.trim();
+      if (!title) { alert('Please enter an assignment title'); return; }
+      const description = document.getElementById('assignment-description')?.value.trim();
+      const dueDate = document.getElementById('assignment-due-date')?.value;
+
+      this.closeModal();
+      this.showProgressModal(`Creating assignment in ${classrooms.length} classrooms...`);
+
+      const fileDataArray = await this.readFilesAsBase64(files);
+      const response = await chrome.runtime.sendMessage({
+        action: 'batchCreateAssignment',
+        data: { classrooms, assignment: { title, description, dueDate }, files: fileDataArray }
+      });
+
+      this.showResultsModal(response.results || [], response.error);
+    } else {
+      const title = document.getElementById('material-title')?.value.trim();
+      if (!title) { alert('Please enter a material title'); return; }
+      const description = document.getElementById('material-description')?.value.trim();
+
+      this.closeModal();
+      this.showProgressModal(`Uploading material to ${classrooms.length} classrooms...`);
+
+      const fileDataArray = await this.readFilesAsBase64(files);
+      const response = await chrome.runtime.sendMessage({
+        action: 'batchUploadMaterial',
+        data: { classrooms, material: { title, description }, files: fileDataArray }
+      });
+
+      this.showResultsModal(response.results || [], response.error);
+    }
+  }
+
+  // ── Batch Assignment ──────────────────────────────────────────────────────────
+
   showBatchAssignmentModal() {
-    const modal = this.createModal('Batch Create Assignment', `
+    this.createModal('Batch Create Assignment', `
       <div class="batch-assignment">
         <div class="group-selection">
           <h4>Select Group</h4>
           <select id="assignment-group-select" class="group-select">
             <option value="">Choose a group...</option>
-            ${Object.keys(this.groups).map(group => 
+            ${Object.keys(this.groups).map(group =>
               `<option value="${group}">${group} (${this.groups[group].length} classes)</option>`
             ).join('')}
           </select>
         </div>
         <div class="assignment-details">
           <h4>Assignment Details</h4>
-          <input type="text" id="batch-assignment-title" placeholder="Assignment title" required>
+          <input type="text" id="batch-assignment-title" placeholder="Assignment title (required)" required>
           <textarea id="batch-assignment-description" placeholder="Assignment description" rows="4"></textarea>
           <div class="assignment-settings">
-            <label>
-              Due Date: <input type="datetime-local" id="batch-due-date">
-            </label>
-            <label>
-              Points: <input type="number" id="batch-points" min="0" placeholder="100">
-            </label>
-            <label>
-              <input type="checkbox" id="batch-allow-late"> Allow late submissions
-            </label>
+            <label>Due Date: <input type="datetime-local" id="batch-due-date"></label>
+            <label>Points: <input type="number" id="batch-points" min="0" placeholder="100"></label>
+            <label><input type="checkbox" id="batch-allow-late"> Allow late submissions</label>
           </div>
         </div>
         <button id="execute-batch-assignment" class="batch-btn primary">Create Assignment in All Classes</button>
@@ -287,50 +456,144 @@ class ClassroomBatchManager {
     });
   }
 
-  async executeBatchUpload() {
-    const groupName = document.getElementById('upload-group-select')?.value;
-    const files = document.getElementById('batch-files')?.files;
-    const uploadType = document.querySelector('input[name="upload-type"]:checked')?.value;
-
-    if (!groupName || !files?.length) {
-      alert('Please select a group and files');
-      return;
-    }
-
-    const classrooms = this.groups[groupName];
-    alert(`This would upload ${files.length} file(s) to ${classrooms.length} classrooms in the "${groupName}" group.\n\nNote: Full implementation requires Google Classroom API integration.`);
-    
-    // In a complete implementation, this would:
-    // 1. Upload files to Google Drive
-    // 2. Use Classroom API to add materials/create assignments
-    // 3. Show progress indicator
-    // 4. Handle errors gracefully
-  }
-
   async executeBatchAssignment() {
     const groupName = document.getElementById('assignment-group-select')?.value;
-    const title = document.getElementById('batch-assignment-title')?.value;
-    const description = document.getElementById('batch-assignment-description')?.value;
+    const title = document.getElementById('batch-assignment-title')?.value.trim();
 
-    if (!groupName || !title) {
-      alert('Please select a group and enter an assignment title');
+    if (!groupName) { alert('Please select a group'); return; }
+    if (!title) { alert('Please enter an assignment title'); return; }
+
+    const classrooms = this.groups[groupName];
+    const description = document.getElementById('batch-assignment-description')?.value.trim();
+    const dueDate = document.getElementById('batch-due-date')?.value;
+    const points = document.getElementById('batch-points')?.value;
+    const allowLate = document.getElementById('batch-allow-late')?.checked;
+
+    this.closeModal();
+    this.showProgressModal(`Creating assignment in ${classrooms.length} classrooms...`);
+
+    const response = await chrome.runtime.sendMessage({
+      action: 'batchCreateAssignment',
+      data: { classrooms, assignment: { title, description, dueDate, points, allowLate } }
+    });
+
+    this.showResultsModal(response.results || [], response.error);
+  }
+
+  // ── Progress & Results UI ─────────────────────────────────────────────────────
+
+  showProgressModal(message) {
+    const existing = document.getElementById('batch-manager-modal');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'batch-manager-modal';
+    modal.className = 'batch-modal-overlay';
+    modal.innerHTML = `
+      <div class="batch-modal">
+        <div class="batch-modal-header">
+          <h3>Working...</h3>
+        </div>
+        <div class="batch-modal-content">
+          <div class="batch-progress">
+            <div class="batch-spinner"></div>
+            <p>${message}</p>
+            <p class="progress-note">Please keep this tab open. This may take a minute for large groups.</p>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+  }
+
+  showResultsModal(results, errorMsg) {
+    const existing = document.getElementById('batch-manager-modal');
+    if (existing) existing.remove();
+
+    if (errorMsg && results.length === 0) {
+      const modal = document.createElement('div');
+      modal.id = 'batch-manager-modal';
+      modal.className = 'batch-modal-overlay';
+      modal.innerHTML = `
+        <div class="batch-modal">
+          <div class="batch-modal-header">
+            <h3>Error</h3>
+            <button class="batch-modal-close">&times;</button>
+          </div>
+          <div class="batch-modal-content">
+            <p class="result-error">Operation failed: ${errorMsg}</p>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      modal.querySelector('.batch-modal-close')?.addEventListener('click', () => this.closeModal());
       return;
     }
 
-    const classrooms = this.groups[groupName];
-    alert(`This would create the assignment "${title}" in ${classrooms.length} classrooms in the "${groupName}" group.\n\nNote: Full implementation requires Google Classroom API integration.`);
+    const succeeded = results.filter(r => r.success).length;
+    const failed = results.length - succeeded;
+
+    const modal = document.createElement('div');
+    modal.id = 'batch-manager-modal';
+    modal.className = 'batch-modal-overlay';
+    modal.innerHTML = `
+      <div class="batch-modal">
+        <div class="batch-modal-header">
+          <h3>Batch Operation Complete</h3>
+          <button class="batch-modal-close">&times;</button>
+        </div>
+        <div class="batch-modal-content">
+          <div class="batch-summary ${failed === 0 ? 'summary-success' : 'summary-partial'}">
+            ${succeeded} of ${results.length} classrooms succeeded${failed > 0 ? ` &mdash; ${failed} failed` : ''}
+          </div>
+          <div class="batch-results-list">
+            ${results.map(r => `
+              <div class="result-row ${r.success ? 'result-success' : 'result-error'}">
+                <span class="result-icon">${r.success ? '&#10003;' : '&#10007;'}</span>
+                <span class="result-classroom">${r.classroomName}</span>
+                ${r.success && (r.assignmentUrl || r.materialUrl)
+                  ? `<a class="result-link" href="${r.assignmentUrl || r.materialUrl}" target="_blank">View</a>`
+                  : ''}
+                ${!r.success ? `<span class="result-error-msg">${r.error || 'Unknown error'}</span>` : ''}
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    modal.querySelector('.batch-modal-close')?.addEventListener('click', () => this.closeModal());
+    modal.addEventListener('click', (e) => { if (e.target === modal) this.closeModal(); });
+  }
+
+  // ── Utilities ─────────────────────────────────────────────────────────────────
+
+  async readFilesAsBase64(fileList) {
+    const results = [];
+    for (const file of fileList) {
+      const buffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      // Process in chunks to avoid call stack overflow on large files
+      const chunkSize = 8192;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+      }
+      results.push({ name: file.name, type: file.type, size: file.size, data: btoa(binary) });
+    }
+    return results;
   }
 
   displaySelectedFiles(files) {
     const fileList = document.getElementById('selected-files');
     if (!fileList) return;
-
     fileList.innerHTML = '';
     Array.from(files).forEach(file => {
-      const fileDiv = document.createElement('div');
-      fileDiv.className = 'selected-file';
-      fileDiv.textContent = `${file.name} (${this.formatFileSize(file.size)})`;
-      fileList.appendChild(fileDiv);
+      const div = document.createElement('div');
+      div.className = 'selected-file';
+      div.textContent = `${file.name} (${this.formatFileSize(file.size)})`;
+      fileList.appendChild(div);
     });
   }
 
@@ -342,22 +605,14 @@ class ClassroomBatchManager {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
 
-  deleteGroup(groupName) {
-    if (confirm(`Delete group "${groupName}"?`)) {
-      delete this.groups[groupName];
-      this.saveGroups();
-      this.displayGroups();
-    }
-  }
-
   extractClassroomId(href) {
-    const match = href.match(/\/c\/([^\/]+)/);
-    return match ? match[1] : Math.random().toString(36).substr(2, 9);
+    const match = href.match(/\/c\/([^\/\?]+)/);
+    return match ? match[1] : null;
   }
 
   createModal(title, content) {
-    const existingModal = document.getElementById('batch-manager-modal');
-    if (existingModal) existingModal.remove();
+    const existing = document.getElementById('batch-manager-modal');
+    if (existing) existing.remove();
 
     const modal = document.createElement('div');
     modal.id = 'batch-manager-modal';
@@ -376,14 +631,8 @@ class ClassroomBatchManager {
 
     document.body.appendChild(modal);
 
-    // Close modal events
-    modal.querySelector('.batch-modal-close')?.addEventListener('click', () => {
-      this.closeModal();
-    });
-
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) this.closeModal();
-    });
+    modal.querySelector('.batch-modal-close')?.addEventListener('click', () => this.closeModal());
+    modal.addEventListener('click', (e) => { if (e.target === modal) this.closeModal(); });
 
     return modal;
   }
@@ -394,25 +643,18 @@ class ClassroomBatchManager {
   }
 
   observePageChanges() {
-    // Re-initialize UI when navigating within Google Classroom
     const observer = new MutationObserver(() => {
-      if (!document.getElementById('batch-manager-container')) {
+      if (!document.getElementById('batch-manager-container') &&
+          !document.getElementById('batch-manager-modal')) {
         setTimeout(() => this.addBatchManagerUI(), 1000);
       }
     });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
+    observer.observe(document.body, { childList: true, subtree: false });
   }
 }
 
-// Initialize when page loads
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    new ClassroomBatchManager();
-  });
+  document.addEventListener('DOMContentLoaded', () => new ClassroomBatchManager());
 } else {
   new ClassroomBatchManager();
 }
