@@ -127,11 +127,10 @@ async function syncWithClassroom() {
     const response = await chrome.runtime.sendMessage({ action: 'getCourses' });
     
     if (response.success) {
-      // Cache course list and update last sync time
-      await chrome.storage.sync.set({
-        cachedCourses: response.courses,
-        lastSync: new Date().toISOString()
-      });
+      // Store slim course list in local storage (avoids 8KB sync quota limit)
+      const slimCourses = response.courses.map(c => ({ id: c.id, name: c.name }));
+      await chrome.storage.local.set({ cachedCourses: slimCourses });
+      await chrome.storage.sync.set({ lastSync: new Date().toISOString() });
       
       updateStatus('✅ Successfully synced with Google Classroom', 'success');
       await loadStats(); // Refresh stats
