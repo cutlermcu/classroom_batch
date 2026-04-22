@@ -87,30 +87,69 @@ class ClassroomAPI {
     return response.courses || [];
   }
 
+  async getTopics(courseId) {
+    try {
+      const response = await this.makeAPICall(`courses/${courseId}/topics?pageSize=100`);
+      return response.topic || []; // API returns "topic" not "topics"
+    } catch (error) {
+      return [];
+    }
+  }
+
+  async createTopic(courseId, name) {
+    return this.makeAPICall(`courses/${courseId}/topics`, 'POST', { name });
+  }
+
   async createAssignment(courseId, assignment) {
     const courseWork = {
       title: assignment.title,
       description: assignment.description || '',
-      workType: 'ASSIGNMENT',
-      state: 'PUBLISHED',
-      submissionModificationMode: assignment.allowLate ? 'MODIFIABLE_UNTIL_TURNED_IN' : 'MODIFIABLE'
+      workType: assignment.workType || 'ASSIGNMENT',
+      state: assignment.state || 'PUBLISHED',
+      submissionModificationMode: assignment.allowLate
+        ? 'MODIFIABLE_UNTIL_TURNED_IN'
+        : 'MODIFIABLE'
     };
 
-    if (assignment.points !== undefined && assignment.points !== null && assignment.points !== '') {
+    // Points only make sense for ASSIGNMENT type
+    if (
+      courseWork.workType === 'ASSIGNMENT' &&
+      assignment.points !== undefined &&
+      assignment.points !== null &&
+      assignment.points !== ''
+    ) {
       courseWork.maxPoints = parseInt(assignment.points);
     }
 
-    if (assignment.dueDate) {
-      const dueDateTime = new Date(assignment.dueDate);
+    // Due date is rejected by the API when state is DRAFT
+    if (assignment.dueDate && courseWork.state !== 'DRAFT') {
+      const d = new Date(assignment.dueDate);
       courseWork.dueDate = {
-        year: dueDateTime.getFullYear(),
-        month: dueDateTime.getMonth() + 1,
-        day: dueDateTime.getDate()
+        year: d.getUTCFullYear(),
+        month: d.getUTCMonth() + 1,
+        day: d.getUTCDate()
       };
       courseWork.dueTime = {
-        hours: dueDateTime.getHours(),
-        minutes: dueDateTime.getMinutes()
+        hours: d.getUTCHours(),
+        minutes: d.getUTCMinutes()
       };
+    }
+
+    // scheduledTime only applies when publishing (not draft)
+    if (assignment.scheduledTime && courseWork.state === 'PUBLISHED') {
+      courseWork.scheduledTime = assignment.scheduledTime;
+    }
+
+    if (assignment.topicId) {
+      courseWork.topicId = assignment.topicId;
+    }
+
+    if (
+      courseWork.workType === 'MULTIPLE_CHOICE_QUESTION' &&
+      assignment.choices &&
+      assignment.choices.length > 0
+    ) {
+      courseWork.multipleChoiceQuestion = { choices: assignment.choices };
     }
 
     if (assignment.materials && assignment.materials.length > 0) {
@@ -133,9 +172,18 @@ class ClassroomAPI {
     const materialData = {
       title: material.title || 'Class Material',
       description: material.description || '',
-      state: 'PUBLISHED',
+      state: material.state || 'PUBLISHED',
       materials: material.materials || []
     };
+
+    if (material.scheduledTime && materialData.state === 'PUBLISHED') {
+      materialData.scheduledTime = material.scheduledTime;
+    }
+
+    if (material.topicId) {
+      materialData.topicId = material.topicId;
+    }
+
     return this.makeAPICall(`courses/${courseId}/courseWorkMaterials`, 'POST', materialData);
   }
 
@@ -282,17 +330,32 @@ async function uploadFilesToDrive(files) {
   return uploadedFiles;
 }
 
+// For each course, find an existing topic by name (case-insensitive) or create it.
+async function resolveTopicId(courseId, topicName) {
+  if (!topicName || !topicName.trim()) return null;
+  const trimmed = topicName.trim().toLowerCase();
+  try {
+    const topics = await classroomAPI.getTopics(courseId);
+    const existing = topics.find(t => t.name.toLowerCase() === trimmed);
+    if (existing) return existing.topicId;
+    const created = await classroomAPI.createTopic(courseId, topicName.trim());
+    return created.topicId;
+  } catch (error) {
+    console.warn(`Could not resolve topic "${topicName}" for course ${courseId}:`, error);
+    return null;
+  }
+}
+
 async function handleBatchAssignment(data) {
   const { classrooms, assignment, files } = data;
   const results = [];
 
-  // Upload any attached files to Drive first
   let driveMaterials = [];
   if (files && files.length > 0) {
     driveMaterials = await uploadFilesToDrive(files);
   }
 
-  const assignmentWithMaterials = {
+  const assignmentBase = {
     ...assignment,
     materials: [...(assignment.materials || []), ...driveMaterials]
   };
@@ -302,7 +365,11 @@ async function handleBatchAssignment(data) {
     if (i > 0) await new Promise(resolve => setTimeout(resolve, 500));
 
     try {
-      const result = await classroomAPI.createAssignment(classroom.id, assignmentWithMaterials);
+      const topicId = await resolveTopicId(classroom.id, assignment.topicName);
+      const result = await classroomAPI.createAssignment(classroom.id, {
+        ...assignmentBase,
+        topicId
+      });
       results.push({
         classroomId: classroom.id,
         classroomName: classroom.name,
@@ -327,23 +394,23 @@ async function handleBatchMaterial(data) {
   const { classrooms, material, files } = data;
   const results = [];
 
-  // Upload files to Drive first
   let driveMaterials = [];
   if (files && files.length > 0) {
     driveMaterials = await uploadFilesToDrive(files);
   }
 
-  const materialWithFiles = {
-    ...material,
-    materials: driveMaterials
-  };
+  const materialBase = { ...material, materials: driveMaterials };
 
   for (let i = 0; i < classrooms.length; i++) {
     const classroom = classrooms[i];
     if (i > 0) await new Promise(resolve => setTimeout(resolve, 500));
 
     try {
-      const result = await classroomAPI.createMaterial(classroom.id, materialWithFiles);
+      const topicId = await resolveTopicId(classroom.id, material.topicName);
+      const result = await classroomAPI.createMaterial(classroom.id, {
+        ...materialBase,
+        topicId
+      });
       results.push({
         classroomId: classroom.id,
         classroomName: classroom.name,
