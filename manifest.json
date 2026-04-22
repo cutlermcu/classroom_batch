@@ -63,6 +63,5 @@
       "resources": ["icons/*.png"],
       "matches": ["https://classroom.google.com/*"]
     }
-  ],
-  
+  ]
 }
