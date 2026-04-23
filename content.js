@@ -2,6 +2,7 @@
 class ClassroomBatchManager {
   constructor() {
     this.groups = {};
+    this.selectedDriveFiles = [];
     this.init();
   }
 
@@ -28,7 +29,58 @@ class ClassroomBatchManager {
       if (request.action === 'showBatchUpload') this.showBatchUploadModal();
       if (request.action === 'showBatchAssignment') this.showBatchAssignmentModal();
       if (request.action === 'showAddToGroupModal') this.showAddToGroupModal();
+      if (request.action === 'driveFilesSelected') this.onDriveFilesSelected(request.files);
     });
+  }
+
+  onDriveFilesSelected(files) {
+    // Deduplicate by Drive file ID
+    const existingIds = new Set(this.selectedDriveFiles.map(f => f.id));
+    files.forEach(f => { if (!existingIds.has(f.id)) this.selectedDriveFiles.push(f); });
+    this.renderSelectedDriveFiles();
+  }
+
+  renderSelectedDriveFiles() {
+    const container = document.getElementById('drive-files-list');
+    if (!container) return;
+
+    container.innerHTML = '';
+    this.selectedDriveFiles.forEach((file, index) => {
+      const chip = document.createElement('div');
+      chip.className = 'drive-file-chip';
+      chip.innerHTML = `
+        <span class="drive-file-icon">&#128196;</span>
+        <span class="drive-file-name">${file.name}</span>
+        <button class="drive-file-remove" data-index="${index}" title="Remove">&times;</button>
+      `;
+      container.appendChild(chip);
+    });
+
+    container.querySelectorAll('.drive-file-remove').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        this.selectedDriveFiles.splice(parseInt(e.target.dataset.index), 1);
+        this.renderSelectedDriveFiles();
+      });
+    });
+  }
+
+  buildDrivePickerSection() {
+    return `
+      <div class="form-row">
+        <label class="field-label">From Google Drive</label>
+        <button type="button" id="open-drive-picker" class="batch-btn drive-picker-btn">
+          Pick from Drive
+        </button>
+        <div id="drive-files-list" class="drive-files-list"></div>
+      </div>
+    `;
+  }
+
+  async openDrivePicker() {
+    const response = await chrome.runtime.sendMessage({ action: 'openPicker' });
+    if (!response.success) {
+      alert(`Could not open Drive picker: ${response.error}`);
+    }
   }
 
   addBatchManagerUI() {
@@ -367,6 +419,7 @@ class ClassroomBatchManager {
   // ── Batch Upload (files → material or assignment) ─────────────────────────────
 
   showBatchUploadModal() {
+    this.selectedDriveFiles = [];
     this.createModal('Batch Upload Files', `
       <div class="batch-upload">
         <div class="form-section">
@@ -383,6 +436,7 @@ class ClassroomBatchManager {
           <h4>Select Files</h4>
           <input type="file" id="batch-files" multiple accept="*/*">
           <div class="file-list" id="selected-files"></div>
+          ${this.buildDrivePickerSection()}
         </div>
 
         <div class="form-section">
@@ -430,6 +484,10 @@ class ClassroomBatchManager {
       this.displaySelectedFilesInto(e.target.files, 'selected-files');
     });
 
+    document.getElementById('open-drive-picker')?.addEventListener('click', () => {
+      this.openDrivePicker();
+    });
+
     this.attachPublishModeListener('bum');
     this.attachPublishModeListener('bua');
 
@@ -459,6 +517,9 @@ class ClassroomBatchManager {
       this.showProgressModal(`Creating assignment in ${classrooms.length} classrooms...`);
 
       const fileDataArray = await this.readFilesAsBase64(files);
+      const driveMaterials = this.selectedDriveFiles.map(f => ({
+        driveFile: { driveFile: { id: f.id, title: f.name }, shareMode: 'VIEW' }
+      }));
       const response = await chrome.runtime.sendMessage({
         action: 'batchCreateAssignment',
         data: {
@@ -470,7 +531,8 @@ class ClassroomBatchManager {
             dueDate: document.getElementById('assignment-due-date')?.value,
             topicName: document.getElementById('bua-topic')?.value.trim(),
             state: publishState.state,
-            scheduledTime: publishState.scheduledTime
+            scheduledTime: publishState.scheduledTime,
+            materials: driveMaterials
           },
           files: fileDataArray
         }
@@ -488,6 +550,9 @@ class ClassroomBatchManager {
       this.showProgressModal(`Uploading material to ${classrooms.length} classrooms...`);
 
       const fileDataArray = await this.readFilesAsBase64(files);
+      const driveMaterials = this.selectedDriveFiles.map(f => ({
+        driveFile: { driveFile: { id: f.id, title: f.name }, shareMode: 'VIEW' }
+      }));
       const response = await chrome.runtime.sendMessage({
         action: 'batchUploadMaterial',
         data: {
@@ -497,7 +562,8 @@ class ClassroomBatchManager {
             description: document.getElementById('material-description')?.value.trim(),
             topicName: document.getElementById('bum-topic')?.value.trim(),
             state: publishState.state,
-            scheduledTime: publishState.scheduledTime
+            scheduledTime: publishState.scheduledTime,
+            materials: driveMaterials
           },
           files: fileDataArray
         }
@@ -509,6 +575,7 @@ class ClassroomBatchManager {
   // ── Batch Assignment ───────────────────────────────────────────────────────────
 
   showBatchAssignmentModal() {
+    this.selectedDriveFiles = [];
     this.createModal('Batch Create Assignment', `
       <div class="batch-assignment">
 
@@ -573,6 +640,7 @@ class ClassroomBatchManager {
           <h4>Attachments (optional)</h4>
           <input type="file" id="ba-files" multiple accept="*/*">
           <div class="file-list" id="ba-selected-files"></div>
+          ${this.buildDrivePickerSection()}
         </div>
 
         <button id="execute-batch-assignment" class="batch-btn primary full-width">
@@ -598,6 +666,10 @@ class ClassroomBatchManager {
 
     document.getElementById('ba-files')?.addEventListener('change', (e) => {
       this.displaySelectedFilesInto(e.target.files, 'ba-selected-files');
+    });
+
+    document.getElementById('open-drive-picker')?.addEventListener('click', () => {
+      this.openDrivePicker();
     });
 
     document.getElementById('execute-batch-assignment')?.addEventListener('click', () => {
@@ -642,6 +714,11 @@ class ClassroomBatchManager {
       ? await this.readFilesAsBase64(files)
       : [];
 
+    // Drive files are already on Drive — pass as pre-built materials, no upload needed
+    const driveMaterials = this.selectedDriveFiles.map(f => ({
+      driveFile: { driveFile: { id: f.id, title: f.name }, shareMode: 'VIEW' }
+    }));
+
     const response = await chrome.runtime.sendMessage({
       action: 'batchCreateAssignment',
       data: {
@@ -656,7 +733,8 @@ class ClassroomBatchManager {
           allowLate,
           topicName,
           state: publishState.state,
-          scheduledTime: publishState.scheduledTime
+          scheduledTime: publishState.scheduledTime,
+          materials: driveMaterials
         },
         files: fileDataArray
       }

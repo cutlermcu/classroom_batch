@@ -1,9 +1,34 @@
 // Popup script for Classroom Batch Manager
 document.addEventListener('DOMContentLoaded', async () => {
   await loadStats();
+  await loadApiKey();
   setupEventListeners();
   checkClassroomStatus();
+  setupSettingsListeners();
 });
+
+async function loadApiKey() {
+  const { apiKey } = await chrome.storage.sync.get(['apiKey']);
+  if (apiKey) {
+    document.getElementById('apiKeyInput').value = apiKey;
+  }
+}
+
+function setupSettingsListeners() {
+  document.getElementById('toggleSettings').addEventListener('click', () => {
+    const content = document.getElementById('settingsContent');
+    content.style.display = content.style.display === 'none' ? 'block' : 'none';
+  });
+
+  document.getElementById('saveApiKey').addEventListener('click', async () => {
+    const key = document.getElementById('apiKeyInput').value.trim();
+    if (!key) return;
+    await chrome.storage.sync.set({ apiKey: key });
+    const btn = document.getElementById('saveApiKey');
+    btn.textContent = 'Saved!';
+    setTimeout(() => { btn.textContent = 'Save'; }, 2000);
+  });
+}
 
 async function loadStats() {
   try {

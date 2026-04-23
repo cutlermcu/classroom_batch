@@ -298,6 +298,61 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         .catch(error => sendResponse({ success: false, error: error.message }));
       return true;
 
+    case 'openPicker':
+      (async () => {
+        try {
+          if (!classroomAPI.accessToken) await classroomAPI.authenticate();
+          const stored = await chrome.storage.sync.get(['apiKey']);
+          if (!stored.apiKey) {
+            sendResponse({ success: false, error: 'No API key saved. Add your Google API key in the extension popup settings.' });
+            return;
+          }
+          // Store picker session so picker.js can retrieve credentials
+          await chrome.storage.session.set({
+            pickerState: {
+              token: classroomAPI.accessToken,
+              apiKey: stored.apiKey,
+              tabId: sender.tab?.id
+            }
+          });
+          await chrome.windows.create({
+            url: chrome.runtime.getURL('picker.html'),
+            type: 'popup',
+            width: 1051,
+            height: 650,
+            focused: true
+          });
+          sendResponse({ success: true });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
+      return true;
+
+    case 'getPickerCredentials':
+      (async () => {
+        const stored = await chrome.storage.session.get(['pickerState']);
+        if (!stored.pickerState) {
+          sendResponse({ success: false, error: 'No picker session found' });
+          return;
+        }
+        sendResponse({ success: true, ...stored.pickerState });
+      })();
+      return true;
+
+    case 'pickerResult':
+      (async () => {
+        const stored = await chrome.storage.session.get(['pickerState']);
+        const tabId = stored.pickerState?.tabId;
+        if (tabId) {
+          chrome.tabs.sendMessage(tabId, { action: 'driveFilesSelected', files: request.files })
+            .catch(() => {}); // Tab may have navigated away
+        }
+        await chrome.storage.session.remove(['pickerState']);
+        sendResponse({ success: true });
+      })();
+      return true;
+
     case 'testConnection':
       sendResponse({ success: true, message: 'Background script is working', timestamp: new Date().toISOString() });
       return false;
@@ -399,7 +454,8 @@ async function handleBatchMaterial(data) {
     driveMaterials = await uploadFilesToDrive(files);
   }
 
-  const materialBase = { ...material, materials: driveMaterials };
+  // Merge pre-selected Drive files with newly uploaded ones
+  const materialBase = { ...material, materials: [...(material.materials || []), ...driveMaterials] };
 
   for (let i = 0; i < classrooms.length; i++) {
     const classroom = classrooms[i];

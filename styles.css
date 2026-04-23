@@ -552,6 +552,58 @@
   font-size: 13px;
 }
 
+/* Drive Picker button */
+.drive-picker-btn {
+  background: #1a73e8;
+  font-size: 13px;
+  padding: 8px 14px;
+  margin-bottom: 8px;
+}
+
+.drive-picker-btn:hover { background: #1557b0; }
+
+/* Drive file chips */
+.drive-files-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.drive-file-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: #e8f0fe;
+  border: 1px solid #c5d2f6;
+  border-radius: 16px;
+  padding: 4px 8px 4px 10px;
+  font-size: 13px;
+  max-width: 280px;
+}
+
+.drive-file-icon { flex-shrink: 0; }
+
+.drive-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #1967d2;
+}
+
+.drive-file-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #888;
+  font-size: 16px;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.drive-file-remove:hover { color: #c62828; }
+
 /* Wider modal for expanded assignment form */
 .batch-modal--wide {
   max-width: 720px;
