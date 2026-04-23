@@ -35,7 +35,6 @@ class ClassroomBatchManager {
     if (window.location.pathname === '/' || window.location.pathname.match(/^\/u\/\d+\/?$/)) {
       this.addMainPageUI();
     }
-
     if (window.location.pathname.includes('/c/')) {
       this.addClassroomPageUI();
     }
@@ -124,13 +123,73 @@ class ClassroomBatchManager {
     document.querySelectorAll('.edit-group-btn').forEach(btn => {
       btn.addEventListener('click', (e) => this.editGroup(e.target.dataset.group));
     });
-
     document.querySelectorAll('.delete-group-btn').forEach(btn => {
       btn.addEventListener('click', (e) => this.deleteGroup(e.target.dataset.group));
     });
   }
 
-  // ── Group Management ────────────────────────────────────────────────────────
+  // ── Publish controls helpers ──────────────────────────────────────────────────
+
+  buildPublishControls(idPrefix) {
+    return `
+      <div class="form-row">
+        <label class="field-label">Publishing</label>
+        <div class="publish-mode-group">
+          <label class="radio-label">
+            <input type="radio" name="${idPrefix}-publish-mode" value="now" checked> Publish now
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="${idPrefix}-publish-mode" value="scheduled"> Schedule
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="${idPrefix}-publish-mode" value="draft"> Save as draft
+          </label>
+        </div>
+        <div id="${idPrefix}-scheduled-time-row" class="scheduled-time-row" style="display:none;">
+          <label class="field-label">Publish at:
+            <input type="datetime-local" id="${idPrefix}-scheduled-time">
+          </label>
+        </div>
+      </div>
+    `;
+  }
+
+  attachPublishModeListener(idPrefix) {
+    document.querySelectorAll(`input[name="${idPrefix}-publish-mode"]`).forEach(radio => {
+      radio.addEventListener('change', (e) => {
+        const scheduledRow = document.getElementById(`${idPrefix}-scheduled-time-row`);
+        if (scheduledRow) scheduledRow.style.display = e.target.value === 'scheduled' ? 'block' : 'none';
+        // Hide due date in draft mode (assignments only)
+        const dueRow = document.getElementById(`${idPrefix}-due-row`);
+        if (dueRow) dueRow.style.display = e.target.value === 'draft' ? 'none' : 'flex';
+      });
+    });
+  }
+
+  readPublishState(idPrefix) {
+    const mode = document.querySelector(`input[name="${idPrefix}-publish-mode"]:checked`)?.value || 'now';
+    if (mode === 'draft') return { state: 'DRAFT', scheduledTime: null };
+    if (mode === 'scheduled') {
+      const raw = document.getElementById(`${idPrefix}-scheduled-time`)?.value;
+      if (!raw) { alert('Please select a scheduled publish time.'); return null; }
+      if (new Date(raw) <= new Date()) { alert('Scheduled time must be in the future.'); return null; }
+      return { state: 'PUBLISHED', scheduledTime: new Date(raw).toISOString() };
+    }
+    return { state: 'PUBLISHED', scheduledTime: null };
+  }
+
+  buildTopicField(idPrefix) {
+    return `
+      <div class="form-row">
+        <label class="field-label" for="${idPrefix}-topic">Topic (optional)</label>
+        <input type="text" id="${idPrefix}-topic" class="field-input"
+               placeholder="e.g. Unit 3 — Forces">
+        <p class="field-hint">A matching topic is found or created in each classroom.</p>
+      </div>
+    `;
+  }
+
+  // ── Group Management ──────────────────────────────────────────────────────────
 
   showGroupManagementModal() {
     this.createModal('Manage Classroom Groups', `
@@ -145,10 +204,7 @@ class ClassroomBatchManager {
     `);
 
     this.loadAvailableClassrooms('create-classroom-list');
-
-    document.getElementById('create-group-btn')?.addEventListener('click', () => {
-      this.createNewGroup();
-    });
+    document.getElementById('create-group-btn')?.addEventListener('click', () => this.createNewGroup());
   }
 
   async loadAvailableClassrooms(containerId) {
@@ -156,15 +212,12 @@ class ClassroomBatchManager {
     if (!container) return [];
 
     container.innerHTML = 'Loading classrooms...';
-
     let courses = [];
 
-    // Try locally-cached courses first (stored in local, not sync, to avoid quota)
     const stored = await chrome.storage.local.get(['cachedCourses']);
     if (stored.cachedCourses && stored.cachedCourses.length > 0) {
       courses = stored.cachedCourses;
     } else {
-      // Fetch from API
       try {
         const response = await chrome.runtime.sendMessage({ action: 'getCourses' });
         if (response.success && response.courses.length > 0) {
@@ -175,7 +228,6 @@ class ClassroomBatchManager {
         console.warn('API fetch failed, falling back to DOM parsing');
       }
 
-      // DOM fallback
       if (courses.length === 0) {
         const elements = document.querySelectorAll('[data-test-id="class-card-title"]');
         courses = Array.from(elements).map(el => ({
@@ -195,7 +247,8 @@ class ClassroomBatchManager {
       const div = document.createElement('div');
       div.className = 'classroom-item';
       div.innerHTML = `
-        <input type="checkbox" id="cls-${containerId}-${classroom.id}" value="${classroom.id}" data-name="${classroom.name}">
+        <input type="checkbox" id="cls-${containerId}-${classroom.id}"
+               value="${classroom.id}" data-name="${classroom.name}">
         <label for="cls-${containerId}-${classroom.id}">${classroom.name}</label>
       `;
       container.appendChild(div);
@@ -206,20 +259,13 @@ class ClassroomBatchManager {
 
   createNewGroup() {
     const groupName = document.getElementById('new-group-name')?.value.trim();
-    if (!groupName) {
-      alert('Please enter a group name');
-      return;
-    }
+    if (!groupName) { alert('Please enter a group name'); return; }
 
     const selected = [];
     document.querySelectorAll('#create-classroom-list input[type="checkbox"]:checked').forEach(cb => {
       selected.push({ id: cb.value, name: cb.dataset.name });
     });
-
-    if (selected.length === 0) {
-      alert('Please select at least one classroom');
-      return;
-    }
+    if (selected.length === 0) { alert('Please select at least one classroom'); return; }
 
     this.groups[groupName] = selected;
     this.saveGroups();
@@ -228,8 +274,7 @@ class ClassroomBatchManager {
   }
 
   editGroup(groupName) {
-    const currentClassrooms = this.groups[groupName] || [];
-    const currentIds = new Set(currentClassrooms.map(c => c.id));
+    const currentIds = new Set((this.groups[groupName] || []).map(c => c.id));
 
     this.createModal(`Edit Group: ${groupName}`, `
       <div class="group-management">
@@ -244,7 +289,6 @@ class ClassroomBatchManager {
     `);
 
     this.loadAvailableClassrooms('edit-classroom-list').then(() => {
-      // Pre-check classrooms already in this group
       document.querySelectorAll('#edit-classroom-list input[type="checkbox"]').forEach(cb => {
         if (currentIds.has(cb.value)) cb.checked = true;
       });
@@ -258,7 +302,6 @@ class ClassroomBatchManager {
       document.querySelectorAll('#edit-classroom-list input[type="checkbox"]:checked').forEach(cb => {
         selected.push({ id: cb.value, name: cb.dataset.name });
       });
-
       if (selected.length === 0) { alert('Please select at least one classroom'); return; }
 
       delete this.groups[groupName];
@@ -281,10 +324,7 @@ class ClassroomBatchManager {
     const courseId = this.extractClassroomId(window.location.href);
     const courseName = document.title.replace(' - Google Classroom', '').trim();
 
-    if (!courseId) {
-      alert('Could not determine classroom ID from this page.');
-      return;
-    }
+    if (!courseId) { alert('Could not determine classroom ID from this page.'); return; }
 
     const groupNames = Object.keys(this.groups);
     if (groupNames.length === 0) {
@@ -324,12 +364,12 @@ class ClassroomBatchManager {
     });
   }
 
-  // ── Batch Upload ─────────────────────────────────────────────────────────────
+  // ── Batch Upload (files → material or assignment) ─────────────────────────────
 
   showBatchUploadModal() {
     this.createModal('Batch Upload Files', `
       <div class="batch-upload">
-        <div class="group-selection">
+        <div class="form-section">
           <h4>Select Group</h4>
           <select id="upload-group-select" class="group-select">
             <option value="">Choose a group...</option>
@@ -338,26 +378,42 @@ class ClassroomBatchManager {
             ).join('')}
           </select>
         </div>
-        <div class="file-selection">
+
+        <div class="form-section">
           <h4>Select Files</h4>
           <input type="file" id="batch-files" multiple accept="*/*">
           <div class="file-list" id="selected-files"></div>
         </div>
-        <div class="upload-options">
+
+        <div class="form-section">
           <h4>Upload Type</h4>
-          <label><input type="radio" name="upload-type" value="material" checked> Add as Material</label>
-          <label><input type="radio" name="upload-type" value="assignment"> Create Assignment</label>
-          <div id="assignment-options" style="display:none;">
-            <input type="text" id="assignment-title" placeholder="Assignment title (required)">
-            <textarea id="assignment-description" placeholder="Assignment description"></textarea>
-            <input type="date" id="assignment-due-date">
-          </div>
-          <div id="material-options">
-            <input type="text" id="material-title" placeholder="Material title (required)">
-            <textarea id="material-description" placeholder="Description (optional)"></textarea>
-          </div>
+          <label class="radio-label"><input type="radio" name="upload-type" value="material" checked> Add as Material</label>
+          <label class="radio-label"><input type="radio" name="upload-type" value="assignment"> Create Assignment</label>
         </div>
-        <button id="execute-batch-upload" class="batch-btn primary">Upload to All Classes</button>
+
+        <div id="material-options" class="form-section">
+          <h4>Material Details</h4>
+          <input type="text" id="material-title" class="field-input" placeholder="Material title (required)">
+          <textarea id="material-description" class="field-input" rows="2" placeholder="Description (optional)"></textarea>
+          ${this.buildTopicField('bum')}
+          ${this.buildPublishControls('bum')}
+        </div>
+
+        <div id="assignment-options" class="form-section" style="display:none;">
+          <h4>Assignment Details</h4>
+          <input type="text" id="assignment-title" class="field-input" placeholder="Assignment title (required)">
+          <textarea id="assignment-description" class="field-input" rows="2" placeholder="Instructions (optional)"></textarea>
+          <div class="settings-grid">
+            <div class="settings-row">
+              <label class="field-label">Due Date</label>
+              <input type="datetime-local" id="assignment-due-date">
+            </div>
+          </div>
+          ${this.buildTopicField('bua')}
+          ${this.buildPublishControls('bua')}
+        </div>
+
+        <button id="execute-batch-upload" class="batch-btn primary full-width">Upload to All Classes</button>
       </div>
     `);
 
@@ -371,8 +427,11 @@ class ClassroomBatchManager {
     });
 
     document.getElementById('batch-files')?.addEventListener('change', (e) => {
-      this.displaySelectedFiles(e.target.files);
+      this.displaySelectedFilesInto(e.target.files, 'selected-files');
     });
+
+    this.attachPublishModeListener('bum');
+    this.attachPublishModeListener('bua');
 
     document.getElementById('execute-batch-upload')?.addEventListener('click', () => {
       this.executeBatchUpload();
@@ -392,8 +451,9 @@ class ClassroomBatchManager {
     if (uploadType === 'assignment') {
       const title = document.getElementById('assignment-title')?.value.trim();
       if (!title) { alert('Please enter an assignment title'); return; }
-      const description = document.getElementById('assignment-description')?.value.trim();
-      const dueDate = document.getElementById('assignment-due-date')?.value;
+
+      const publishState = this.readPublishState('bua');
+      if (publishState === null) return;
 
       this.closeModal();
       this.showProgressModal(`Creating assignment in ${classrooms.length} classrooms...`);
@@ -401,14 +461,28 @@ class ClassroomBatchManager {
       const fileDataArray = await this.readFilesAsBase64(files);
       const response = await chrome.runtime.sendMessage({
         action: 'batchCreateAssignment',
-        data: { classrooms, assignment: { title, description, dueDate }, files: fileDataArray }
+        data: {
+          classrooms,
+          assignment: {
+            title,
+            description: document.getElementById('assignment-description')?.value.trim(),
+            workType: 'ASSIGNMENT',
+            dueDate: document.getElementById('assignment-due-date')?.value,
+            topicName: document.getElementById('bua-topic')?.value.trim(),
+            state: publishState.state,
+            scheduledTime: publishState.scheduledTime
+          },
+          files: fileDataArray
+        }
       });
-
       this.showResultsModal(response.results || [], response.error);
+
     } else {
       const title = document.getElementById('material-title')?.value.trim();
       if (!title) { alert('Please enter a material title'); return; }
-      const description = document.getElementById('material-description')?.value.trim();
+
+      const publishState = this.readPublishState('bum');
+      if (publishState === null) return;
 
       this.closeModal();
       this.showProgressModal(`Uploading material to ${classrooms.length} classrooms...`);
@@ -416,40 +490,115 @@ class ClassroomBatchManager {
       const fileDataArray = await this.readFilesAsBase64(files);
       const response = await chrome.runtime.sendMessage({
         action: 'batchUploadMaterial',
-        data: { classrooms, material: { title, description }, files: fileDataArray }
+        data: {
+          classrooms,
+          material: {
+            title,
+            description: document.getElementById('material-description')?.value.trim(),
+            topicName: document.getElementById('bum-topic')?.value.trim(),
+            state: publishState.state,
+            scheduledTime: publishState.scheduledTime
+          },
+          files: fileDataArray
+        }
       });
-
       this.showResultsModal(response.results || [], response.error);
     }
   }
 
-  // ── Batch Assignment ──────────────────────────────────────────────────────────
+  // ── Batch Assignment ───────────────────────────────────────────────────────────
 
   showBatchAssignmentModal() {
     this.createModal('Batch Create Assignment', `
       <div class="batch-assignment">
-        <div class="group-selection">
+
+        <div class="form-section">
           <h4>Select Group</h4>
-          <select id="assignment-group-select" class="group-select">
+          <select id="ba-group-select" class="group-select">
             <option value="">Choose a group...</option>
-            ${Object.keys(this.groups).map(group =>
-              `<option value="${group}">${group} (${this.groups[group].length} classes)</option>`
+            ${Object.keys(this.groups).map(g =>
+              `<option value="${g}">${g} (${this.groups[g].length} classes)</option>`
             ).join('')}
           </select>
         </div>
-        <div class="assignment-details">
-          <h4>Assignment Details</h4>
-          <input type="text" id="batch-assignment-title" placeholder="Assignment title (required)" required>
-          <textarea id="batch-assignment-description" placeholder="Assignment description" rows="4"></textarea>
-          <div class="assignment-settings">
-            <label>Due Date: <input type="datetime-local" id="batch-due-date"></label>
-            <label>Points: <input type="number" id="batch-points" min="0" placeholder="100"></label>
-            <label><input type="checkbox" id="batch-allow-late"> Allow late submissions</label>
+
+        <div class="form-section">
+          <h4>Details</h4>
+          <input type="text" id="ba-title" class="field-input" placeholder="Title (required)" required>
+          <textarea id="ba-description" class="field-input" rows="3"
+                    placeholder="Instructions (optional)"></textarea>
+        </div>
+
+        <div class="form-section">
+          <h4>Work Type</h4>
+          <div class="work-type-group">
+            <label class="radio-label">
+              <input type="radio" name="ba-work-type" value="ASSIGNMENT" checked> Assignment
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="ba-work-type" value="SHORT_ANSWER_QUESTION"> Short Answer Question
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="ba-work-type" value="MULTIPLE_CHOICE_QUESTION"> Multiple Choice Question
+            </label>
+          </div>
+          <div id="ba-mcq-options" class="mcq-options" style="display:none;">
+            <label class="field-label">Choices (one per line, minimum 2)</label>
+            <textarea id="ba-mcq-choices" class="field-input" rows="4"
+                      placeholder="Choice A&#10;Choice B&#10;Choice C"></textarea>
           </div>
         </div>
-        <button id="execute-batch-assignment" class="batch-btn primary">Create Assignment in All Classes</button>
+
+        <div class="form-section">
+          <h4>Settings</h4>
+          <div class="settings-grid">
+            <div id="ba-due-row" class="settings-row">
+              <label class="field-label">Due Date</label>
+              <input type="datetime-local" id="ba-due-date">
+            </div>
+            <div id="ba-points-row" class="settings-row">
+              <label class="field-label">Points Possible</label>
+              <input type="number" id="ba-points" min="0" placeholder="100">
+            </div>
+            <div id="ba-late-row" class="settings-row">
+              <label class="field-label">Allow Late Submissions</label>
+              <input type="checkbox" id="ba-allow-late">
+            </div>
+          </div>
+          ${this.buildTopicField('ba')}
+          ${this.buildPublishControls('ba')}
+        </div>
+
+        <div class="form-section">
+          <h4>Attachments (optional)</h4>
+          <input type="file" id="ba-files" multiple accept="*/*">
+          <div class="file-list" id="ba-selected-files"></div>
+        </div>
+
+        <button id="execute-batch-assignment" class="batch-btn primary full-width">
+          Create in All Classes
+        </button>
       </div>
     `);
+
+    document.querySelector('#batch-manager-modal .batch-modal')
+      ?.classList.add('batch-modal--wide');
+
+    document.querySelectorAll('input[name="ba-work-type"]').forEach(radio => {
+      radio.addEventListener('change', (e) => {
+        const isQuestion = e.target.value !== 'ASSIGNMENT';
+        const isMCQ = e.target.value === 'MULTIPLE_CHOICE_QUESTION';
+        document.getElementById('ba-mcq-options').style.display = isMCQ ? 'block' : 'none';
+        document.getElementById('ba-points-row').style.display = isQuestion ? 'none' : 'flex';
+        document.getElementById('ba-late-row').style.display = isQuestion ? 'none' : 'flex';
+      });
+    });
+
+    this.attachPublishModeListener('ba');
+
+    document.getElementById('ba-files')?.addEventListener('change', (e) => {
+      this.displaySelectedFilesInto(e.target.files, 'ba-selected-files');
+    });
 
     document.getElementById('execute-batch-assignment')?.addEventListener('click', () => {
       this.executeBatchAssignment();
@@ -457,24 +606,60 @@ class ClassroomBatchManager {
   }
 
   async executeBatchAssignment() {
-    const groupName = document.getElementById('assignment-group-select')?.value;
-    const title = document.getElementById('batch-assignment-title')?.value.trim();
+    const groupName = document.getElementById('ba-group-select')?.value;
+    const title = document.getElementById('ba-title')?.value.trim();
 
     if (!groupName) { alert('Please select a group'); return; }
     if (!title) { alert('Please enter an assignment title'); return; }
 
     const classrooms = this.groups[groupName];
-    const description = document.getElementById('batch-assignment-description')?.value.trim();
-    const dueDate = document.getElementById('batch-due-date')?.value;
-    const points = document.getElementById('batch-points')?.value;
-    const allowLate = document.getElementById('batch-allow-late')?.checked;
+    const workType = document.querySelector('input[name="ba-work-type"]:checked')?.value || 'ASSIGNMENT';
+
+    let choices = [];
+    if (workType === 'MULTIPLE_CHOICE_QUESTION') {
+      const raw = document.getElementById('ba-mcq-choices')?.value || '';
+      choices = raw.split('\n').map(s => s.trim()).filter(Boolean);
+      if (choices.length < 2) {
+        alert('Multiple choice questions require at least 2 choices.');
+        return;
+      }
+    }
+
+    const publishState = this.readPublishState('ba');
+    if (publishState === null) return;
+
+    const description = document.getElementById('ba-description')?.value.trim();
+    const dueDate = document.getElementById('ba-due-date')?.value;
+    const points = document.getElementById('ba-points')?.value;
+    const allowLate = document.getElementById('ba-allow-late')?.checked;
+    const topicName = document.getElementById('ba-topic')?.value.trim();
+    const files = document.getElementById('ba-files')?.files;
 
     this.closeModal();
     this.showProgressModal(`Creating assignment in ${classrooms.length} classrooms...`);
 
+    const fileDataArray = (files && files.length > 0)
+      ? await this.readFilesAsBase64(files)
+      : [];
+
     const response = await chrome.runtime.sendMessage({
       action: 'batchCreateAssignment',
-      data: { classrooms, assignment: { title, description, dueDate, points, allowLate } }
+      data: {
+        classrooms,
+        assignment: {
+          title,
+          description,
+          workType,
+          choices,
+          dueDate: publishState.state !== 'DRAFT' ? dueDate : null,
+          points,
+          allowLate,
+          topicName,
+          state: publishState.state,
+          scheduledTime: publishState.scheduledTime
+        },
+        files: fileDataArray
+      }
     });
 
     this.showResultsModal(response.results || [], response.error);
@@ -521,7 +706,7 @@ class ClassroomBatchManager {
             <button class="batch-modal-close">&times;</button>
           </div>
           <div class="batch-modal-content">
-            <p class="result-error">Operation failed: ${errorMsg}</p>
+            <p style="color:#c62828;">Operation failed: ${errorMsg}</p>
           </div>
         </div>
       `;
@@ -575,7 +760,6 @@ class ClassroomBatchManager {
       const buffer = await file.arrayBuffer();
       const bytes = new Uint8Array(buffer);
       let binary = '';
-      // Process in chunks to avoid call stack overflow on large files
       const chunkSize = 8192;
       for (let i = 0; i < bytes.length; i += chunkSize) {
         binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
@@ -585,8 +769,8 @@ class ClassroomBatchManager {
     return results;
   }
 
-  displaySelectedFiles(files) {
-    const fileList = document.getElementById('selected-files');
+  displaySelectedFilesInto(files, containerId) {
+    const fileList = document.getElementById(containerId);
     if (!fileList) return;
     fileList.innerHTML = '';
     Array.from(files).forEach(file => {
@@ -630,10 +814,8 @@ class ClassroomBatchManager {
     `;
 
     document.body.appendChild(modal);
-
     modal.querySelector('.batch-modal-close')?.addEventListener('click', () => this.closeModal());
     modal.addEventListener('click', (e) => { if (e.target === modal) this.closeModal(); });
-
     return modal;
   }
 
